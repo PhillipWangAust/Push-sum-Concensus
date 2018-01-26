@@ -1,0 +1,202 @@
+#include "agent.h"
+#include <cstdio>
+#include <cstdlib>
+#include <string>
+#include <vector>
+#include <list>
+#include <iostream>
+#include <string.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+#include <unistd.h>
+#include <thread>
+#define BUFSIZE 2048
+#define BUFLEN 2048
+#define SERVICE_PORT 21231
+#define RESPONSE_PORT 21232
+
+using namespace std;
+extern Agent *me = new Agent(string("node1"));
+// int serialize(char *data, struct Agent *agent)
+// {
+//   //data should be sizeof struct. 
+//   int i=0;
+//   double _state = agent->getState() ,_alpha=agent->getAlpha();
+  
+//   memcpy(&data[i], &_state, sizeof(double));
+//     i+= sizeof(double);
+//  memcpy(&data[i], &_alpha, sizeof(double));
+//     i+= sizeof(double);
+//   memcpy(&data[i], &myIndex, sizeof(int));
+//     i+= sizeof(int);
+
+//   return i;
+  
+// }
+// int deserialize(char *data, struct Agent *agent)
+// {
+//   int i=0;
+//   double _state, _alpha;
+//   int ind;
+//   memcpy(&_state,&data[i], sizeof(double));
+//     i+= sizeof(double);
+//     memcpy(&_alpha,&data[i], sizeof(double));
+//     i+= sizeof(double);
+//     memcpy(&ind,&data[i], sizeof(int));
+//     i+= sizeof(int);
+//     cout << "reconstructed: " <<_state <<endl;
+// }
+int SetupServer()
+{
+	char *read;
+  int recIndex;
+  double recState;
+  double recAlpha;
+	 struct sockaddr_in myaddr;	/* our address */
+	struct sockaddr_in remaddr;	/* remote address */
+	socklen_t addrlen = sizeof(remaddr);		/* length of addresses */
+	int recvlen;			/* # bytes received */
+	int fd;				/* our socket */
+	 char buf[BUFSIZE];
+	bzero(buf,BUFSIZE);
+    if ((fd = socket(AF_INET, SOCK_DGRAM, 0)) < 0) {
+		cout << "cannot create socket\n";
+		return 0;
+	}
+    memset((char *)&myaddr, 0, sizeof(myaddr));
+	myaddr.sin_family = AF_INET;
+	myaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	myaddr.sin_port = htons(SERVICE_PORT);
+    if (bind(fd, (struct sockaddr *)&myaddr, sizeof(myaddr)) < 0) {
+		cout <<"bind failed";
+		return 0;
+	}
+    for (;;) {
+		cout << "\nwaiting on port: "<< SERVICE_PORT<<endl;
+		recvlen = recvfrom(fd, buf, BUFSIZE, 0, (struct sockaddr *)&remaddr, &addrlen);
+		if (recvlen > 0) {
+				paillier_pubkey_t* _pubKey;
+				paillier_prvkey_t* _prvKey;
+	 			paillier_ciphertext_t* ctxt1;
+				 paillier_ciphertext_t* c_res = paillier_create_enc_zero();
+	 			char hexPubKey[BUFSIZE]; bzero(hexPubKey,BUFSIZE);
+	 			char byteCtxt[BUFSIZE];bzero(byteCtxt,BUFSIZE);
+				 char hexPrvKey[BUFSIZE]; bzero(hexPrvKey,BUFSIZE);
+	 			int def=0, s_pub, s_ctxt,s_prv;
+				int i=0;
+
+				memcpy(&def,&buf[i],sizeof(int)); i+=sizeof(int); //read type
+				//cout<<"recvlen: "<<def;
+				
+				
+				if(def == 1)//this is a request
+				{
+					
+				memcpy(&s_pub,&buf[i],sizeof(int)); i+=sizeof(int); //read size of public key
+				memcpy(&s_prv,&buf[i],sizeof(int)); i+=sizeof(int);
+			 	memcpy(&s_ctxt,&buf[i],sizeof(int)); i+=sizeof(int); //read size of cypher text
+					 
+			  	memcpy(&hexPubKey,&buf[i],s_pub); i+=s_pub; //read public key
+
+				memcpy(&hexPrvKey,&buf[i],s_prv);i+=s_prv;	//read prv key
+				for(int k=i;k<i+s_ctxt;k++)
+				{
+					byteCtxt[k-i] = buf[k];
+				}i+=s_ctxt;
+				
+			  	//memcpy(&byteCtxt, &buf[i],s_ctxt);i+=s_ctxt; //read cypher 
+				  //cout<<"hex:prvKey: "<<byteCtxt<<endl;
+			  		_pubKey = paillier_pubkey_from_hex(hexPubKey); //recreate public key
+			  		_prvKey = paillier_prvkey_from_hex(hexPrvKey,_pubKey); //--testing with private key
+					  ctxt1 = paillier_ciphertext_from_bytes((void*)byteCtxt, PAILLIER_BITS_TO_BYTES(_pubKey->bits)*2); //recreate cypher text
+					  paillier_plaintext_t* m_s = paillier_dec(NULL, _pubKey, _prvKey, ctxt1);
+					  gmp_printf("Decrypted received: %Zd\n", m_s);
+
+					me->exchange(_pubKey,ctxt1,c_res);
+					paillier_plaintext_t* ts = paillier_dec(NULL,_pubKey,_prvKey,c_res);
+					gmp_printf("Decrypted C_RESPONSE received: %Zd\n", ts);
+					char *resBytes = (char*)paillier_ciphertext_to_bytes(PAILLIER_BITS_TO_BYTES(_pubKey->bits)*2, c_res);
+					
+					char respBuf[BUFSIZE];bzero(respBuf,BUFSIZE);
+					int type = 2; //This is a response
+					int size = PAILLIER_BITS_TO_BYTES(_pubKey->bits)*2;
+					int j=0;
+					memcpy(&respBuf[j],&type,sizeof(int));j+=sizeof(int);
+					memcpy(&respBuf[j],&size,sizeof(int));j+=sizeof(int);
+					for(int k=j;k<j+size;k++)
+					{
+						respBuf[k] = resBytes[k-j];
+					}
+					
+					remaddr.sin_port = htons(RESPONSE_PORT); //This should be the port address of whom the request was received from
+					cout<< "sending response!"<<endl;
+	  			if (sendto(fd, respBuf, BUFSIZE, 0, (struct sockaddr *)&remaddr, addrlen)==-1)
+			cout << "Error at sendto";
+					 paillier_freeciphertext(c_res);
+				}
+				else if(def == 2)//this is a response
+				{
+					
+					memcpy(&s_ctxt,&buf[i],sizeof(int));i+=sizeof(int);//read size
+					
+					memcpy(&byteCtxt, &buf[i],s_ctxt); //read cypher
+					cout<<"state update in progress!"<<endl;
+					
+					ctxt1 = paillier_ciphertext_from_bytes((void*)byteCtxt, PAILLIER_BITS_TO_BYTES(me->pubKey->bits)*2); //recreate
+					
+					long result =0;
+					me->diff_state =0;
+					
+		        	result = me->ciphertext_to_long(ctxt1);
+					
+  		        	me->diff_state += me->alpha * result;
+					  
+					    me->updateState();
+					
+				}
+
+			
+			//cout << "received message recvlen: " << recvlen<<endl;
+      		bzero(buf,BUFSIZE);
+			//  cout<<"Here we wait for last input";
+			//		cin>>read;
+		}
+	}
+}
+int SetupClient(char *send)
+{
+  struct sockaddr_in myaddr, remaddr;
+	int fd, i, slen=sizeof(remaddr);
+	char *server = "127.0.0.1";	/* change this to use a different server */
+	char buf[BUFLEN];
+
+	/* create a socket */
+
+	if ((fd=socket(AF_INET, SOCK_DGRAM, 0))==-1)
+		cout << "socket created\n" ;
+        memset((char *)&myaddr, 0, sizeof(myaddr));
+	myaddr.sin_family = AF_INET;
+	myaddr.sin_addr.s_addr = htonl(INADDR_ANY);
+	myaddr.sin_port = htons(0);
+    if (bind(fd, (struct sockaddr *)&myaddr, sizeof(myaddr)) < 0) {
+		cout << "bind failed";
+		return 0;
+	}    
+    memset((char *) &remaddr, 0, sizeof(remaddr));
+	remaddr.sin_family = AF_INET;
+	remaddr.sin_port = htons(RESPONSE_PORT);
+	if (inet_aton(server, &remaddr.sin_addr)==0) {
+		cout << "inet_aton() failed\n";
+		exit(1);
+	}
+    for (i=0; i < 1; i++) {
+		cout << "Sending packet \n";
+		if (sendto(fd, send, 20, 0, (struct sockaddr *)&remaddr, slen)==-1)
+			cout << "Error at sendto";
+	}
+	close(fd);
+	return 0;
+}
